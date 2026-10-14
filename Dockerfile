@@ -13,6 +13,7 @@ RUN apt-get update \
         openssh-server \
         curl \
     && echo "root:Docker!" | chpasswd \
+    && rm -f /etc/ssh/ssh_host_* \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy custom SSH configuration for Azure App Service

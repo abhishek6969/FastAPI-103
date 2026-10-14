@@ -6,6 +6,10 @@ set -e
 # =============================================================================
 
 # 1. Start OpenSSH server for Azure App Service Web SSH console (port 2222)
+# Generate fresh host keys dynamically at runtime if missing (keeps static images secret-free)
+if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
+    ssh-keygen -A > /dev/null 2>&1 || true
+fi
 service ssh start
 
 # 2. Run database migrations only if explicitly enabled (e.g. RUNNING_LOCAL=true)

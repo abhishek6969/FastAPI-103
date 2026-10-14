@@ -1,4 +1,5 @@
-fastapi==0.115.0
+fastapi>=0.115.6
+starlette>=0.41.2
 uvicorn[standard]==0.30.6
 python-multipart>=0.0.20
 azure-ai-documentintelligence==1.0.0
