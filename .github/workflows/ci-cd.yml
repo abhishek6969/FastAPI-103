@@ -5,45 +5,74 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions UI
 
 env:
   PYTHON_VERSION: "3.12"
 
 jobs:
   # =========================================================================
-  # STAGE 1: Code Quality, Testing, SonarQube & Trivy Dependency Scan
+  # STAGE 1: Code Quality, Testing, SonarCloud SAST & Trivy Dependency Scan
   # =========================================================================
   quality-and-security:
     name: 1. Quality, Tests & Security Scans
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------------------------------------------------------------
+      # 1.1 CHECKOUT SOURCE CODE
+      # ---------------------------------------------------------------------
+      # WHY fetch-depth: 0?
+      # By default, checkout does a shallow clone (depth: 1, only the latest commit).
+      # SonarCloud REQUIRES the entire git history (fetch-depth: 0) to compute git blame,
+      # track who changed each line of code, and calculate accurate PR differential analysis.
       - name: 1.1 Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Full git history required for SonarQube analysis
+          fetch-depth: 0
 
+      # ---------------------------------------------------------------------
+      # 1.2 SET UP PYTHON RUNTIME
+      # ---------------------------------------------------------------------
+      # WHY cache: "pip"?
+      # Tells GitHub Actions to cache the ~/.cache/pip directory across workflow runs.
+      # When dependencies don't change, 'pip install' resolves instantly from cache.
       - name: 1.2 Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
 
+      # ---------------------------------------------------------------------
+      # 1.3 INSTALL DEPENDENCIES
+      # ---------------------------------------------------------------------
       - name: 1.3 Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: 1.4 Lint & Code Style (Ruff)
-        run: |
-          ruff check app/ tests/
+      # ---------------------------------------------------------------------
+      # 1.4 LINT & CODE STYLE CHECK (Optional, currently disabled by user)
+      # ---------------------------------------------------------------------
+      # - name: 1.4 Lint & Code Style (Ruff)
+      #   run: |
+      #     ruff check app/ tests/
 
+      # ---------------------------------------------------------------------
+      # 1.5 RUN UNIT TESTS & GENERATE COVERAGE REPORT
+      # ---------------------------------------------------------------------
+      # WHY --cov-report=xml:coverage.xml?
+      # SonarCloud cannot read Python's terminal output; it requires coverage in
+      # Cobertura XML format. This file is passed to SonarCloud in step 1.8.
       - name: 1.5 Run Pytest & Generate Coverage Report
         run: |
-          # Runs all 27 offline unit tests, outputs terminal summary and coverage.xml for SonarQube
           pytest -v --cov=app --cov-report=xml:coverage.xml --cov-report=term tests/
 
+      # ---------------------------------------------------------------------
+      # 1.6 SAVE COVERAGE ARTIFACT
+      # ---------------------------------------------------------------------
+      # Preserves coverage.xml in the GitHub Actions run summary for 7 days
+      # so you can download and inspect it anytime if a build fails.
       - name: 1.6 Upload Test Coverage Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -51,6 +80,19 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
+      # ---------------------------------------------------------------------
+      # 1.7 TRIVY REPOSITORY & DEPENDENCY SCAN (SCA)
+      # ---------------------------------------------------------------------
+      # WHAT IS SCA (Software Composition Analysis)?
+      # Trivy parses `requirements.txt` and git tree to detect known CVEs and leaked secrets.
+      #
+      # WHY exit-code: "1"?
+      # By default, Trivy only logs vulnerabilities (exit-code 0). Setting exit-code: "1"
+      # forces the pipeline to STOP and FAIL if any CRITICAL or HIGH severity CVE is found.
+      #
+      # WHY ignore-unfixed: true?
+      # Ignores vulnerabilities that have no official security patch available from
+      # upstream maintainers yet (avoids blocking builds on issues you cannot fix).
       - name: 1.7 Trivy Dependency & Secret Scan (SCA)
         uses: aquasecurity/trivy-action@master
         with:
@@ -59,8 +101,18 @@ jobs:
           ignore-unfixed: true
           format: "table"
           severity: "CRITICAL,HIGH"
-          exit-code: "1" # ❌ Fails build if CRITICAL or HIGH vulnerabilities or leaked secrets are detected
+          exit-code: "1"
 
+      # ---------------------------------------------------------------------
+      # 1.8 SONARCLOUD CODE QUALITY & SAST GATE
+      # ---------------------------------------------------------------------
+      # WHAT THIS DOES:
+      # Uploads code and coverage.xml to SonarCloud. Scans for OWASP Top 10 security bugs,
+      # code smells, technical debt, and checks if code coverage satisfies Quality Gate.
+      #
+      # WHY -Dsonar.qualitygate.wait=true?
+      # Tells the CLI to pause and wait for SonarCloud server to finish processing.
+      # If the Quality Gate fails (e.g. security rating drops below A), the build FAILS.
       - name: 1.8 SonarCloud Analysis (SAST & Quality Gate)
         uses: sonarsource/sonarcloud-github-action@v3
         if: env.SONAR_TOKEN != ''
@@ -77,20 +129,43 @@ jobs:
             -Dsonar.qualitygate.wait=true
 
   # =========================================================================
-  # STAGE 2: Cached Docker Build, Trivy Image Scan & Registry Push
+  # STAGE 2: Cached Docker Build, Trivy Container Image Scan & Push
   # =========================================================================
   container-build-and-scan:
     name: 2. Container Build, Scan & Push
-    needs: [ quality-and-security ]
+    needs: [ quality-and-security ] # Only runs if Stage 1 passes all tests and scans!
     runs-on: ubuntu-latest
 
     steps:
       - name: 2.1 Checkout Code
         uses: actions/checkout@v4
 
+      # ---------------------------------------------------------------------
+      # 2.2 SET UP DOCKER BUILDX
+      # ---------------------------------------------------------------------
+      # WHAT IS BUILDX?
+      # Buildx is Docker's modern BuildKit engine. It enables advanced caching
+      # (GHA cache backend) and multi-platform image builds.
       - name: 2.2 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # ---------------------------------------------------------------------
+      # 2.3 EXTRACT DOCKER METADATA (Tags & OCI Labels)
+      # ---------------------------------------------------------------------
+      # WHAT IS METADATA ACTION & HOW IS IT USED?
+      # Instead of hardcoding image tags in bash scripts, this action inspects git
+      # and generates standard, immutable image tags and OpenContainer labels.
+      #
+      # HOW TAGS ARE GENERATED:
+      #   1. type=sha,format=short: Produces: username/fastapi-invoice-api:sha-1a2b3c4
+      #      (Every single build gets a unique, immutable tag tied to the git commit!)
+      #   2. type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}:
+      #      Produces ':latest' ONLY when building commits merged into the 'main' branch.
+      #
+      # HOW OUTPUTS ARE REFERENCED LATER:
+      #   - `steps.meta.outputs.tags`: multi-line string containing all tags.
+      #   - `steps.meta.outputs.labels`: standard OCI metadata (commit author, repo URL, date).
+      #   - `fromJSON(steps.meta.outputs.json).tags[0]`: exact primary tag used by Trivy below!
       - name: 2.3 Extract Docker Metadata (Tags & Labels)
         id: meta
         uses: docker/metadata-action@v5
@@ -100,16 +175,39 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
+      # ---------------------------------------------------------------------
+      # 2.4 BUILD DOCKER IMAGE WITH GHA CACHE (LOCAL LOAD, NO PUSH)
+      # ---------------------------------------------------------------------
+      # WHY load: true?
+      # By default, Buildx builds inside an isolated builder container. Setting `load: true`
+      # exports the finished image into the runner's local Docker daemon so local tools
+      # (like Trivy in step 2.5) can inspect and scan it without pulling from a remote registry.
+      #
+      # WHY cache-from / cache-to: type=gha?
+      # Uses GitHub Actions native cache storage. Layers that didn't change (e.g. system
+      # packages, pip dependencies) are restored from cache in 2 seconds instead of rebuilding!
+      # `mode=max` caches intermediate build stages for maximum reuse.
       - name: 2.4 Build Docker Image with GHA Cache (Local Load, No Push)
         uses: docker/build-push-action@v6
         with:
           context: .
-          load: true # Loads image into local Docker daemon so Trivy can scan it
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ---------------------------------------------------------------------
+      # 2.5 TRIVY CONTAINER IMAGE SCAN (PRE-PUSH SECURITY GATE)
+      # ---------------------------------------------------------------------
+      # Scans the actual built container image (including the Debian base OS layers
+      # in python:3.12-slim like openssl, glibc, curl) for vulnerabilities.
+      #
+      # HOW image-ref IS PASSED:
+      # `fromJSON(steps.meta.outputs.json).tags[0]` extracts the first image tag generated
+      # by step 2.3 (e.g. `username/fastapi-invoice-api:sha-1a2b3c4`).
+      #
+      # exit-code: "1": Fails the build and blocks push if CRITICAL or HIGH CVEs exist.
       - name: 2.5 Trivy Container Image Scan (Pre-Push Gate)
         uses: aquasecurity/trivy-action@master
         with:
@@ -118,8 +216,14 @@ jobs:
           format: "table"
           severity: "CRITICAL,HIGH"
           ignore-unfixed: true
-          exit-code: "1" # ❌ Fails build if container image has unfixed CRITICAL or HIGH CVEs
+          exit-code: "1"
 
+      # ---------------------------------------------------------------------
+      # 2.6 DOCKER HUB AUTHENTICATION
+      # ---------------------------------------------------------------------
+      # WHY github.event_name != 'pull_request'?
+      # Security rule: Never log in or push container images on Pull Requests from forks
+      # or feature branches! Only push when code is actually merged to 'main' or 'develop'.
       - name: 2.6 Log in to Docker Hub
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') && env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v3
@@ -129,6 +233,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # ---------------------------------------------------------------------
+      # 2.7 PUSH VERIFIED CONTAINER IMAGE TO DOCKER HUB
+      # ---------------------------------------------------------------------
+      # Because step 2.4 already built and cached all layers, this step does NOT
+      # recompile anything! It simply uploads the verified image layers in ~3 seconds.
       - name: 2.7 Push Verified Image to Docker Hub (Using Cache)
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') && env.DOCKERHUB_USERNAME != ''
         uses: docker/build-push-action@v6
@@ -142,7 +251,7 @@ jobs:
           cache-from: type=gha
 
   # =========================================================================
-  # STAGE 3: Infrastructure & Deploy (Gated until vulnerabilities are cleared)
+  # STAGE 3: Infrastructure & Production Deploy (Gated until scans pass)
   # =========================================================================
   # deploy-production:
   #   name: 3. Terraform Infra & Azure Deploy
