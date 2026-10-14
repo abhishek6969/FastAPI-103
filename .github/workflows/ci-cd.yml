@@ -133,11 +133,6 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
-            -Dsonar.organization=Abhishek_Sunkale
-            -Dsonar.projectKey=Abhishek-Sunkale
-            -Dsonar.sources=app
-            -Dsonar.tests=tests
-            -Dsonar.python.coverage.reportPaths=coverage.xml
             -Dsonar.qualitygate.wait=true
 
   # =========================================================================
