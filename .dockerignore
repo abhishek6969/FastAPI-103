@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+
+# Python virtual environments & bytecode
+venv/
+venv2/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+
+# Terraform
+terraform/
+
+# IDE
+.vscode/
+.idea/

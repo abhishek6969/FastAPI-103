@@ -1,0 +1,16 @@
+.env
+venv/
+venv2/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Terraform
+# terraform.tfvars contains secrets — never commit it.
+# terraform.tfstate contains resource IDs and may contain sensitive values.
+# .terraform/ is the downloaded provider plugins directory (large, auto-regenerated).
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+terraform/.terraform.lock.hcl

@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars and fill in values. Never commit terraform.tfvars.
+
+project_name = "invoice"
+environment  = "dev"
+location     = "East US"
+
+# Docker Hub
+docker_image             = "yourdockerhubuser/invoice-api:latest"
+docker_registry_username = "yourdockerhubuser"
+docker_registry_password = "YOUR_DOCKERHUB_ACCESS_TOKEN"
+
+# PostgreSQL — only secret that can't be derived from a resource
+postgres_admin_user     = "pgadmin"
+postgres_admin_password = "REPLACE_WITH_STRONG_PASSWORD"
+postgres_db_name        = "invoice_db"
+
+# Microsoft Entra ID
+azure_tenant_id = "YOUR_ENTRA_TENANT_ID"
+azure_client_id = "YOUR_ENTRA_CLIENT_ID"
+
+# Note: azure_document_intelligence_endpoint and key are read automatically
+# from the provisioned Document Intelligence resource — no manual entry needed.
+# azure_client_secret is not injected into the app — only needed for local
+# Swagger UI dev flow in your .env file.
