@@ -66,7 +66,11 @@ jobs:
       # Cobertura XML format. This file is passed to SonarCloud in step 1.8.
       - name: 1.5 Run Pytest & Generate Coverage Report
         run: |
-          pytest -v --cov=app --cov-report=xml:coverage.xml --cov-report=term tests/
+          # Run tests with coverage on repo root (recording paths like app/services/auth.py)
+          pytest -v --cov=. --cov-report=xml:coverage.xml --cov-report=term tests/
+          # Fix source path in coverage.xml: GitHub Actions host paths (/home/runner/work/...)
+          # must be mapped to SonarCloud's container workspace path (/github/workspace)
+          sed -i 's|<source>.*</source>|<source>/github/workspace</source>|g' coverage.xml
 
       # ---------------------------------------------------------------------
       # 1.6 SAVE COVERAGE ARTIFACT
