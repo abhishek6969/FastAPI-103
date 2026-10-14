@@ -100,8 +100,20 @@ jobs:
           scanners: "vuln,secret"
           ignore-unfixed: true
           format: "table"
+          output: "trivy-fs-report.txt"
           severity: "CRITICAL,HIGH"
           exit-code: "1"
+
+      - name: 1.7.1 Publish Trivy Filesystem Scan to Job Summary
+        if: always()
+        run: |
+          if [ -f trivy-fs-report.txt ]; then
+            cat trivy-fs-report.txt
+            echo "### 🛡️ Trivy Filesystem & Dependency Security Scan" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            cat trivy-fs-report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
 
       # ---------------------------------------------------------------------
       # 1.8 SONARCLOUD CODE QUALITY & SAST GATE
@@ -214,9 +226,21 @@ jobs:
           scan-type: "image"
           image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           format: "table"
+          output: "trivy-image-report.txt"
           severity: "CRITICAL,HIGH"
           ignore-unfixed: true
           exit-code: "1"
+
+      - name: 2.5.1 Publish Trivy Image Scan to Job Summary
+        if: always()
+        run: |
+          if [ -f trivy-image-report.txt ]; then
+            cat trivy-image-report.txt
+            echo "### 🐳 Trivy Container Image Security Scan" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            cat trivy-image-report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
 
       # ---------------------------------------------------------------------
       # 2.6 DOCKER HUB AUTHENTICATION
