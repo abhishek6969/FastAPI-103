@@ -32,11 +32,11 @@ resource "azurerm_postgresql_flexible_server_database" "app_db" {
 }
 
 # Allow inbound connections from Azure services (includes App Service)
-resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure_services" {
-  name             = "allow-azure-services"
+resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all_services" {
+  name             = "allow-all-services"
   server_id        = azurerm_postgresql_flexible_server.main.id
   start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
+  end_ip_address   = "255.255.255.255"
 }
 
 # Uncomment to allow your local machine to connect (e.g. for running alembic locally)

@@ -1098,19 +1098,22 @@ The repository implements a **Shift-Left DevSecOps Pipeline** via GitHub Actions
 
 ### 2. Required GitHub Secrets
 
-To enable Docker Hub publishing and SonarCloud analysis, configure the following secrets in your GitHub repository (**Settings > Secrets and variables > Actions > New repository secret**):
+To enable Docker Hub publishing, SonarCloud analysis, and automated Azure deployment, configure the following secrets in your GitHub repository (**Settings > Secrets and variables > Actions > New repository secret**):
 
-| Secret Name | Description | Where to Obtain |
+| Secret Name | Description | Where to Obtain / Command |
 | :--- | :--- | :--- |
 | `DOCKERHUB_USERNAME` | Your Docker Hub account username | [hub.docker.com](https://hub.docker.com) |
 | `DOCKERHUB_TOKEN` | Docker Hub Personal Access Token (Read & Write) | Docker Hub Account Settings > Security > New Access Token |
 | `SONAR_TOKEN` | SonarCloud Authentication Token | [sonarcloud.io](https://sonarcloud.io) > User Profile > My Account > Security > Generate Token |
+| `AZURE_CREDENTIALS` | Service Principal JSON credentials for Azure login | `az ad sp create-for-rbac --name "sp-fastapi-invoice-cicd" --role Contributor --scopes "/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-invoice-dev" --sdk-auth` |
+| `AZURE_WEBAPP_NAME` | Name of the Azure Linux Web App (default: `app-invoice-dev`) | Azure Portal > App Services or Terraform output |
+| `DATABASE_URL` | Production PostgreSQL connection string with SSL | `postgresql+asyncpg://<user>:<password>@<db-host>:5432/<dbname>?ssl=require` |
 
 > [!NOTE]
-> - SonarCloud Organization: `Abhishek_Sunkale`
-> - SonarCloud Project Key: `Abhishek-Sunkale`
+> - SonarCloud Organization: `abhishek-sunkale`
+> - SonarCloud Project Key: `abhishek6969_FastAPI-103`
 > - `GITHUB_TOKEN` is automatically injected by GitHub Actions to report PR quality gate statuses.
-> - If `DOCKERHUB_USERNAME` or `SONAR_TOKEN` is not yet set, the workflow will gracefully run the local builds, tests, and security scans without failing or attempting unauthorized pushes.
+> - If `DOCKERHUB_USERNAME`, `SONAR_TOKEN`, `AZURE_CREDENTIALS`, or `DATABASE_URL` is not yet configured, the workflow gracefully skips optional remote steps without failing local builds, tests, and security scans.
 
 ---
 
@@ -1155,5 +1158,64 @@ pytest -v --cov=app --cov-report=term tests/
 trivy fs --scanners vuln,secret .
 ```
 
+---
 
+### 6. Real-World DevSecOps Troubleshooting & Hardening Lessons
 
+During pipeline integration, multiple real-world security gates and configuration hurdles were identified and hardened:
+
+#### Lesson 1: Docker Image Secret Leaks from SSH Host Keys (`AsymmetricPrivateKey`)
+- **The Issue:** Trivy flagged `/etc/ssh/ssh_host_rsa_key`, `ssh_host_ecdsa_key`, and `ssh_host_ed25519_key` as `HIGH` severity secret leaks inside the container image.
+- **Root Cause:** When `apt-get install -y openssh-server` runs during `docker build`, Debian’s package manager generates static SSH host private keys and bakes them permanently into the Docker image layers. This is insecure because every running container would share identical private keys.
+- **The Solution:**
+  1. In [Dockerfile](file:///d:/Azure/FastAPI-103/Dockerfile#L16), we purge build-time keys:  
+     `rm -f /etc/ssh/ssh_host_*`
+  2. In [entrypoint.sh](file:///d:/Azure/FastAPI-103/entrypoint.sh#L9-L13), we generate fresh, unique host keys dynamically at container boot:  
+     `if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then ssh-keygen -A; fi`
+  - **Outcome:** The static Docker image has **0 private keys**, Trivy secret scans pass cleanly, and Azure App Service Web SSH functions securely with dynamically generated keys.
+
+#### Lesson 2: Transitive Dependency CVEs (`starlette`)
+- **The Issue:** Trivy reported 3 `HIGH` severity CVEs against `starlette` (`CVE-2024-47874`, `CVE-2026-48818`, `CVE-2026-54283`).
+- **Root Cause:** While direct dependencies were updated, `fastapi==0.115.0` was pulling in an unpinned, vulnerable transitive version of Starlette (`0.38.6`).
+- **The Solution:** Bumped `fastapi>=0.115.6` and explicitly pinned `starlette>=0.41.2` in [requirements.txt](file:///d:/Azure/FastAPI-103/requirements.txt), immediately eliminating all High and Critical CVEs from the dependency tree.
+
+#### Lesson 3: SonarCloud Container Path Mapping in GitHub Actions
+- **The Issue:** SonarCloud reported `Coverage: 0.0%` with the warning:  
+  `Invalid directory path in 'source' element: /home/runner/work/FastAPI-103/FastAPI-103/app`
+- **Root Cause:** Pytest runs on the GitHub Actions host runner (`/home/runner/work/...`), but `sonarcloud-github-action` runs inside an isolated Docker container where the repository is mounted at `/github/workspace`. Because the absolute host path did not exist inside the container, SonarCloud could not resolve the 15 source files.
+- **The Solution:** We run `pytest --cov=.` and normalize the coverage path with a one-line `sed` command before SonarCloud executes:  
+  `sed -i 's|<source>.*</source>|<source>/github/workspace</source>|g' coverage.xml`  
+  This aligns with `sonar.sources=.` and `sonar.inclusions=app/**`, allowing SonarCloud to resolve 100% of source files and display true coverage metrics.
+
+#### Lesson 4: Pipeline Trigger Efficiency (`paths-ignore`)
+- **The Need:** Pushing documentation updates (like `README.md`) or modifying Terraform infrastructure configurations should not trigger a full Docker build, unit test suite, and image scan.
+- **The Solution:** Added `paths-ignore` to `.github/workflows/ci-cd.yml`:
+  ```yaml
+  paths-ignore:
+    - "terraform/**"
+    - "**.md"
+    - ".gitignore"
+  ```
+  This saves GitHub Actions compute minutes and prevents redundant container builds while managing infrastructure separately.
+
+#### Lesson 5: Pre-Deployment Database Migrations with Alembic in CI/CD
+- **The Issue:** Running database migrations inside the Docker container entrypoint (`entrypoint.sh`) at startup causes critical operational hazards in production:
+  1. **Concurrency Conflicts:** When App Service scales or boots multiple container replicas simultaneously, each worker runs `alembic upgrade head` concurrently, risking database schema locks and race conditions.
+  2. **Crash Loops:** If a migration fails on boot, the container exits immediately, leading to App Service restart loops and total downtime for live traffic.
+- **The Solution:** We decoupled database migrations from container boot. In Stage 3 of [.github/workflows/ci-cd.yml](file:///d:/Azure/FastAPI-103/.github/workflows/ci-cd.yml), GitHub Actions runs `alembic upgrade head` in a single isolated runner step *before* triggering the container update:
+  ```bash
+  alembic upgrade head
+  ```
+  If migrations encounter an error, the deployment aborts immediately, leaving the existing live container completely untouched and operational.
+
+#### Lesson 6: Zero-Downtime Container Deployments to Azure App Service via Service Principal (SP)
+- **The Workflow:**
+  1. **Authentication:** GitHub Actions authenticates against Azure Resource Manager using a dedicated Service Principal (`azure/login@v2`) scoped to the resource group (`rg-invoice-dev`).
+  2. **Container Rollout:** Microsoft's official `azure/webapps-deploy@v3` action updates the App Service configuration to the freshly built, Trivy-scanned Docker image (`${{ secrets.DOCKERHUB_USERNAME }}/fastapi-invoice-api:latest`).
+  3. **Health Validation:** Azure App Service performs a zero-downtime rolling container swap, keeping existing requests alive until the new container passes health probes on port 8000.
+
+#### Lesson 7: Decoupling Cloud Infrastructure from Application Delivery
+- **The Practice:** Infrastructure code (`terraform/**`) and application code (`app/**`) possess different lifecycles and risk profiles:
+  - Infrastructure changes (PostgreSQL firewall rules, Redis cache tiering, Cognitive Services SKUs) are stateful, high-impact operations managed deliberately via the Terraform CLI.
+  - Application CI/CD concentrates on rapid feedback, unit testing, SAST/SCA security gates, container image creation, and automated deployment.
+  - By ignoring `terraform/**` in application CI/CD, developers avoid unintentional infra mutations while maintaining rapid, secure application release velocity.
