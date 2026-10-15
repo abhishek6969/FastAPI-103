@@ -8,10 +8,11 @@ WORKDIR /app
 
 # 1. Install system utilities and OpenSSH server for Azure App Service SSH
 # Azure App Service requires OpenSSH running on port 2222 with root password 'Docker!'
+# Running apt-get upgrade -y ensures all base OS packages receive upstream security patches
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         openssh-server \
-        curl \
     && echo "root:Docker!" | chpasswd \
     && rm -f /etc/ssh/ssh_host_* \
     && rm -rf /var/lib/apt/lists/*
