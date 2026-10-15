@@ -1112,68 +1112,175 @@ The repository implements a **Shift-Left DevSecOps Pipeline** via GitHub Actions
 
 ---
 
-### 1.1 GitFlow Simulation: Adding the User Preferences Feature
+---
 
-To demonstrate GitFlow in practice, we simulated adding a lightweight **User Preferences** feature (`user_preferences` table with UI `theme: dark | light`):
+### 1.1 GitFlow Scenarios & Command Reference
 
-#### Lifecycle Overview:
+GitFlow governs how code progresses from local feature development to live production. Below are the 4 fundamental real-world scenarios:
+
+---
+
+#### Scenario A: Standard Feature Flow (`feature/*` ➔ `develop` ➔ `main`)
+
+Use this for all scheduled product features, improvements, and non-critical refactors.
+
 ```
-(develop) ───► cut feature branch ───► [feature/user-preferences]
-                                              │
-                                              │ Code: Model, Router, Alembic 002, Unit Tests
-                                              │ Run offline tests locally (`pytest`)
-                                              ▼
-(develop) ◄─── Merge PR (CI gates pass) ◄─── Push & Open PR to develop
+(develop) ──► cut branch ──► [feature/user-preferences]
+                                    │
+                                    │ Develop, run pytest offline
+                                    │ git commit & push
+                                    ▼
+(develop) ◄── Merge PR #1 ◄── PR: feature/user-preferences ➔ develop
+    │                         (Runs Stage 1: Tests, SonarCloud, Trivy FS)
+    ▼
+Release PR #2
     │
     ▼
-Promote to Release via PR
-    │
-    ▼
-(main) ◄────── Merge PR to main ───► Triggers Container Scan, Alembic Pre-Deploy & App Service Rollout
+(main) ◄───── Merge PR #2 ──► Triggers Stage 1, Stage 2 (Docker & Trivy Image),
+                              and Stage 3 (Alembic DB Migrations & Azure Deploy)
 ```
 
-#### Step-by-Step Simulation Commands:
-
+##### Exact Terminal Commands:
 ```bash
-# 1. Switch to develop and pull latest
+# 1. Start from latest develop
 git checkout develop
 git pull origin develop
 
-# 2. Create feature branch off develop
+# 2. Cut a new feature branch
 git checkout -b feature/user-preferences
 
-# 3. Develop feature (already generated in app/ and alembic/)
-#    - Model: app/models/db_preference.py
-#    - Schemas: app/models/preference.py
-#    - Service: app/services/db_preference.py
-#    - Router: app/routers/preferences.py (GET /preferences, PUT /preferences)
-#    - Migration: alembic/versions/002_create_user_preferences.py
-#    - Unit Tests: tests/test_preferences.py
+# 3. Develop feature, models, router, migrations, and unit tests
+# ... write code ...
 
-# 4. Verify test suite passes locally (33 tests in < 2 seconds)
+# 4. Verify all tests pass locally (100% offline, < 2s)
 pytest -v tests/test_preferences.py
 
-# 5. Commit changes
+# 5. Stage, commit, and push feature branch
 git add app/ alembic/ tests/
-git commit -m "feat(preferences): add user UI theme preferences with alembic migration"
-
-# 6. Push feature branch to GitHub
+git commit -m "feat(preferences): add user theme preferences with alembic 002 migration"
 git push -u origin feature/user-preferences
 
-# 7. Open Pull Request on GitHub:
+# 6. Open Pull Request on GitHub:
 #    Base: develop  <--  Compare: feature/user-preferences
-#    GitHub Actions runs Stage 1 (Tests + SonarCloud + Trivy).
-#    Branch protection blocks merge until all checks are green!
+#    - Branch protection requires Stage 1 checks to pass.
+#    - SonarCloud verifies new lines of code and coverage.
+#    - Merge PR into develop.
 
-# 8. Merge PR into develop on GitHub.
-
-# 9. Release Promotion to Production:
-#    Open PR on GitHub:
+# 7. Release Promotion to Production:
+#    Open Pull Request on GitHub:
 #    Base: main  <--  Compare: develop
-#    Once merged to main, GitHub Actions triggers:
-#    - Stage 1: Quality, Tests, SonarCloud
-#    - Stage 2: Docker Buildx, Trivy container scan, Docker Hub push
-#    - Stage 3: Alembic migration (002) against Azure PostgreSQL, followed by App Service container deploy!
+#    - Merging into main triggers the full pipeline:
+#      Docker Buildx -> Trivy Container Scan -> Docker Hub Push ->
+#      Alembic Migration (002) on Azure PostgreSQL -> Azure App Service Rollout!
+
+# 8. Post-Release Local Sync (Keep machine clean):
+git checkout main
+git pull origin main
+git checkout develop
+git pull origin develop
+git branch -d feature/user-preferences  # Delete merged local branch
+```
+
+---
+
+#### Scenario B: Production Hotfix Flow (`hotfix/*` ➔ `main` AND Back-Sync to `develop`)
+
+Use this when a **critical bug, zero-day CVE, or production outage** occurs on live `main` that cannot wait for the next feature release cycle.
+
+```
+(main) ──────► cut hotfix ────► [hotfix/patch-critical-cve]
+                                         │
+                                         │ Fix issue, run pytest
+                                         ▼
+(main) ◄────── Merge PR #1 ◄─── PR: hotfix ➔ main (Triggers Immediate Deploy)
+  │
+  └──────────► MANDATORY BACK-SYNC ────► (develop) (Prevents bug reintroduction)
+```
+
+##### Exact Terminal Commands:
+```bash
+# 1. Cut hotfix branch directly from production main
+git checkout main
+git pull origin main
+git checkout -b hotfix/patch-critical-cve
+
+# 2. Apply fix (e.g. Dockerfile security patch, config fix)
+# ... apply fix ...
+
+# 3. Verify tests pass locally
+pytest -v
+
+# 4. Commit and push hotfix
+git add Dockerfile
+git commit -m "fix(security): patch critical CVE in container base image"
+git push -u origin hotfix/patch-critical-cve
+
+# 5. Open Hotfix PR to main on GitHub:
+#    Base: main  <--  Compare: hotfix/patch-critical-cve
+#    - Merge into main triggers automated build, container scan, and deployment!
+
+# 6. CRITICAL STEP: Back-Sync Hotfix into develop!
+#    WHY? If you don't sync back to develop, future feature branches cut from
+#    develop will reintroduce the bug or fail security gates on their next release!
+git checkout develop
+git pull origin develop
+git merge main
+git push origin develop
+
+# 7. Clean up hotfix branch
+git branch -d hotfix/patch-critical-cve
+git push origin --delete hotfix/patch-critical-cve
+```
+
+---
+
+#### Scenario C: In-Flight Work When Remote Branches Are Ahead (Stash Workflow)
+
+Use this when you have **uncommitted, local changes in progress**, but your remote branch has received new commits (e.g. from a teammate's PR or an upstream security hotfix).
+
+##### Exact Terminal Commands:
+```bash
+# 1. Safely stash all uncommitted work (including untracked files)
+# WHY -u (--include-untracked)?
+# Newly created files (new models, new tests) are untracked by default.
+# Standard 'git stash' leaves them behind; '-u' guarantees a 100% clean working directory.
+git stash -u -m "wip: in-flight feature work"
+
+# 2. Pull remote updates cleanly
+git checkout develop
+git pull origin develop
+
+# 3. Switch to your feature branch (or cut a new one)
+git checkout -b feature/my-feature
+
+# 4. Restore your in-flight changes onto the updated base
+git stash pop
+
+# 5. Resolve any file conflicts if prompted, run tests, and commit
+pytest -v
+git add .
+git commit -m "feat: complete feature implementation"
+git push -u origin feature/my-feature
+```
+
+---
+
+#### Scenario D: Branch Housekeeping & Deletion
+
+Keeping stale branches clutters Git trees and leads to accidental branching off outdated bases.
+
+```bash
+# Delete a local branch (only if already merged)
+git branch -d feature/user-preferences
+
+# Force delete a local branch (if discarded)
+git branch -D feature/user-preferences
+
+# Delete a remote branch from GitHub
+git push origin --delete feature/user-preferences
+
+# Clean up local tracking references for remote branches deleted on GitHub
+git fetch --prune
 ```
 
 ### 2. Required GitHub Secrets
@@ -1310,3 +1417,18 @@ During pipeline integration, multiple real-world security gates and configuratio
   2. **Upstream Security Upgrades:** Added `apt-get upgrade -y` to the Docker build step to ensure all base Debian OS libraries receive security patches.
   3. **Cache Invalidation:** Updating the `Dockerfile` `RUN` step busts the stale GHA layer cache, forcing Buildx to build a fresh, hardened image.
 
+---
+
+## 7. Project Architecture & Complete DevSecOps Summary
+
+This repository demonstrates an end-to-end enterprise cloud engineering lifecycle:
+
+- **Layered Clean Architecture:** Strict separation between API presentation (`app/routers/`), business logic (`app/services/`), and data storage (`app/models/`, `app/database.py`).
+- **Cloud Integrations:** Azure Document Intelligence (OCR), Azure Database for PostgreSQL Flexible Server, and Azure Managed Redis.
+- **Enterprise Identity:** Microsoft Entra ID (Azure AD) JWT token verification using public RS256 JWKS signing keys and role-based access control (RBAC).
+- **Hardened Production Containers:** Multi-worker Gunicorn + Uvicorn server, OpenSSH integration for Azure App Service Web SSH with dynamically generated host keys (0 baked-in secrets), and minimal base image attack surface.
+- **Shift-Left DevSecOps Pipeline:** Automated GitHub Actions workflow implementing offline unit testing (33 tests in <2s), SonarCloud SAST Quality Gate with Cobertura path normalization, Trivy filesystem/secret scanning, Trivy pre-push container image vulnerability gating, and pre-deploy Alembic migrations.
+- **Enterprise GitFlow Delivery:** Protected `main` and `develop` branches, ephemeral feature branches, automated pull request status checks, and zero-downtime rolling container updates to Azure App Service via a dedicated Service Principal.
+
+---
+*End of Documentation — FastAPI Invoice Extractor API*
