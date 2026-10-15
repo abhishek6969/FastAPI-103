@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import invoices
+from app.routers import invoices, preferences
 from app.config import get_settings
 
 settings = get_settings()
@@ -39,6 +39,7 @@ app.add_middleware(
 )
 
 app.include_router(invoices.router)
+app.include_router(preferences.router)
 
 
 @app.get("/health", tags=["health"])

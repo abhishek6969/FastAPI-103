@@ -37,6 +37,7 @@ from alembic import context
 # migrations for it.
 from app.database import Base
 from app.models.db_invoice import InvoiceRecord  # noqa: F401 — import registers model with Base.metadata
+from app.models.db_preference import UserPreference  # noqa: F401 — registers user_preferences model
 from app.config import get_settings
 
 # `config` is the Alembic Config object — gives access to alembic.ini values.
