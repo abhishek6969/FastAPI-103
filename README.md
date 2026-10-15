@@ -5,6 +5,7 @@
 A FastAPI service that accepts an invoice image or PDF and returns structured data (vendor, amounts, line items, dates) extracted by Azure's AI model.
 
 The point of this project is **not** the invoice feature itself — it's a vehicle to learn and demonstrate:
+
 - Realistic FastAPI project structure (not toy CRUD)
 - Azure AI/PaaS integration
 - Redis caching + async background processing (Step 2) ✅
@@ -21,6 +22,7 @@ The point of this project is **not** the invoice feature itself — it's a vehic
 Invoice processing is a genuine enterprise problem: companies receive thousands of invoices monthly and historically needed people to manually key in vendor name, amount, dates into an ERP. Automating this is a well-understood, high-value use case — which makes it a credible demo rather than a "Books API".
 
 It also naturally requires:
+
 - **File upload** (not just JSON)
 - **An external AI service** (Azure Document Intelligence)
 - **Background processing** — OCR takes 3–8 seconds, you don't hold an HTTP connection open that long
@@ -64,7 +66,7 @@ Azure Document Intelligence (formerly Form Recognizer) is an Azure AI service th
 The critical distinction vs. a general LLM:
 
 | | Document Intelligence | LLM (GPT-4, etc.) |
-|---|---|---|
+| --- | --- | --- |
 | Understands pixel layout | ✅ Yes — knows tables, boxes, columns | ⚠️ No — only sees text |
 | Output | Structured JSON, always consistent | Free-form text, needs parsing |
 | Cost | ~$1.50 / 1,000 pages | ~$15–60 / 1,000 pages |
@@ -105,6 +107,7 @@ This is why `_safe_float()` exists — it handles both `CurrencyValue` objects a
 Every field Azure extracts has a `confidence` value (0.0 to 1.0). A high-quality, clearly-printed invoice might give `VendorName: 0.98`. A blurry photo or unusual layout might give `InvoiceTotal: 0.61`.
 
 We average all field confidences to produce an overall document confidence score. This is returned to the client so they can decide what to do:
+
 - `confidence > 0.9` → auto-approve, post to ERP
 - `confidence 0.6–0.9` → flag for human review
 - `confidence < 0.6` → reject, request rescan
@@ -125,6 +128,7 @@ async def extract_invoice(
 `Depends` tells FastAPI: "before calling this function, call `get_settings()` and inject its return value as the `settings` parameter."
 
 Why not just import settings at the top of the file?
+
 - **Testability**: In tests, you can override `get_settings` to return a mock config with test credentials — without touching any module-level state
 - **Lifecycle control**: `Depends` can also handle database connections, auth token validation, rate limiting — anything that should run per-request
 
@@ -200,6 +204,7 @@ The Azure SDK is a synchronous (blocking) library. Calling it directly inside an
 **What Microsoft Entra ID (Step 3) replaces:**
 
 In a traditional app without Entra, you'd build:
+
 - User registration endpoint
 - Password hashing (bcrypt)
 - Login endpoint + JWT generation
@@ -215,7 +220,7 @@ Entra ID handles **all of this** for you. It's Azure's identity platform. Users 
 Yes — but for **application data**, not authentication data. The distinction:
 
 | Data | Where it lives | Why |
-|------|---------------|-----|
+| ------ | --------------- | ----- |
 | Who the user is, password, login | Entra ID | Not our problem to manage |
 | User's app preferences, settings | Database (Postgres, etc.) | Application-specific data |
 | Which invoices belong to which user | Database | Business data |
@@ -225,6 +230,7 @@ Yes — but for **application data**, not authentication data. The distinction:
 **For this project specifically:**
 
 We skip the database entirely because:
+
 1. Entra handles identity
 2. Redis handles temporary results
 3. There's no business requirement to store invoices long-term — the use case is extract and return, not store and manage
@@ -306,12 +312,14 @@ You might wonder: *anyone who intercepts the code in the URL could try to exchan
 There are two answers depending on the type of client:
 
 **Confidential client (server-side app — can keep a secret):**
+
 ```
 POST /oauth2/v2.0/token
   code=abc123xyz
   client_id=8d9daf82-...
   client_secret=awh8Q~Pk...   ← proves "I am the real registered app"
 ```
+
 Entra verifies the secret matches. Anyone who stole the code but doesn't have the secret can't use it.
 
 **Public client (browser app / Swagger UI — cannot keep a secret):**
@@ -342,6 +350,7 @@ Phase 2 — sends the ORIGINAL string (never seen before):
 If an attacker steals the code from the URL, they still can't exchange it — they'd need `code_verifier` which was only ever held in Swagger UI's memory, never exposed.
 
 **In this project:**
+
 - Swagger UI uses PKCE (`usePkceWithAuthorizationCodeGrant: True` in main.py)
 - The `AZURE_CLIENT_SECRET` in `.env` is not used for the Swagger UI login flow
 - It would be used if a server-side app (e.g. a Python/Node frontend) did the token exchange on behalf of users, or for Client Credentials flow (machine-to-machine, no user login)
@@ -378,7 +387,6 @@ Multiple independent defense layers make this attack impossible:
 ---
 
 **Phase 3 — Using the token (who puts what in headers)**
-
 
 ```
 Swagger UI / your app / Postman          FastAPI (your API)
@@ -435,6 +443,7 @@ eyJhbGciOiJSUzI1NiIsImtpZCI6ImFiYzEyMyJ9   ← HEADER
 ```
 
 **HEADER** contains metadata: `{ "alg": "RS256", "kid": "abc123" }`
+
 - `kid` = which of Entra's public keys signed this token
 
 **PAYLOAD** contains claims: `{ "oid": "user-guid", "upn": "you@company.com", "iss": "https://login.microsoftonline.com/{tenant}/v2.0", "aud": "api://8d9daf82-...", "exp": 1727934600, "roles": [] }`
@@ -469,6 +478,7 @@ eyJhbGciOiJSUzI1NiIsImtpZCI6ImFiYzEyMyJ9   ← HEADER
 Entra signs tokens with its **private key** (which never leaves Microsoft). It publishes the matching **public key** at the JWKS URL. We use the public key to verify the signature — but cannot forge new tokens (that requires the private key). This means we can validate tokens completely offline after fetching the keys once.
 
 **Token Error Handling & HTTP 401 Responses:**
+
 - `jwt.ExpiredSignatureError`: The token's expiration timestamp (`exp`) has passed. Handled specifically to return HTTP 401 with detail `"Token has expired."` and the `WWW-Authenticate: Bearer` response header, signaling to the client that it should re-authenticate or refresh.
 - `jwt.InvalidTokenError`: Catches all other cryptographic and structural validation failures (invalid signature, wrong issuer `iss`, wrong audience `aud`, malformed token) and returns HTTP 401 Unauthorized.
 
@@ -477,6 +487,7 @@ Entra signs tokens with its **private key** (which never leaves Microsoft). It p
 #### App Roles (future — Invoice.Reader, Invoice.Contributor)
 
 Roles are defined in the App Registration → "App roles" section. Once defined and assigned to users:
+
 - The token's `roles` claim contains: `["Invoice.Contributor"]`
 - `CurrentUser.roles` is already wired to read this field
 - We'll add a `require_role("Invoice.Contributor")` dependency that checks this list
@@ -497,8 +508,6 @@ async def extract(user = Depends(require_role("Invoice.Contributor"))):
 ```
 
 ---
-
-
 
 ## Running Locally
 
@@ -539,12 +548,14 @@ TTL task:<uuid>
 ## Testing the Async Flow
 
 ### Step 1: Submit invoice
+
 ```bash
 curl -X POST "http://localhost:8000/invoices/extract" \
      -F "file=@invoice.pdf"
 ```
 
 Response (immediate, ~50ms):
+
 ```json
 {
   "task_id": "a1b2c3d4-...",
@@ -555,11 +566,13 @@ Response (immediate, ~50ms):
 ```
 
 ### Step 2: Poll for result
+
 ```bash
 curl "http://localhost:8000/invoices/status/a1b2c3d4-..."
 ```
 
 Response when done:
+
 ```json
 {
   "task_id": "a1b2c3d4-...",
@@ -573,6 +586,7 @@ Response when done:
 ```
 
 ### Step 3: Upload same file again → cache hit
+
 ```json
 {
   "task_id": "...",
@@ -593,7 +607,7 @@ The `terraform/` directory provisions the entire Azure cloud infrastructure requ
 ### Provisioned Cloud Resources
 
 | Resource | Terraform Type | SKU / Tier | Purpose |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Resource Group** | `azurerm_resource_group` | — | Logical container for all project assets |
 | **App Service Plan & Linux Web App** | `azurerm_service_plan`, `azurerm_linux_web_app` | `F1` / `B1` | Hosts the Docker container pulled from Docker Hub |
 | **PostgreSQL Flexible Server** | `azurerm_postgresql_flexible_server` | `B_Standard_B1ms` (Burstable) | Relational persistence for processed invoices |
@@ -615,6 +629,7 @@ terraform/
 ```
 
 ### Automatic Secret Wiring
+
 The Web App's `app_settings` in `app_service.tf` wires connection strings and keys directly from the created resources (e.g., `${azurerm_managed_redis.main.hostname}` and `${azurerm_cognitive_account.document_intelligence.primary_access_key}`). This eliminates manual copy-pasting of endpoints and keys across services.
 
 ---
@@ -626,6 +641,7 @@ The Web App's `app_settings` in `app_service.tf` wires connection strings and ke
 > The `terraform/` folder is placed here for **educational simplicity** — allowing you to see the application code, Docker definitions, migrations, and cloud infrastructure together in a single repository.
 
 #### Production Best Practice
+
 In enterprise production setups, application code and infrastructure code are separated:
 
 1. **Decoupled Lifecycles**: Application code changes frequently (multiple times a day), whereas foundational infrastructure (VNet, databases, Redis) changes infrequently.
@@ -698,6 +714,7 @@ jobs:
 ## 11. Automated Testing & Mocking Architecture (Step 6 / Pytest)
 
 The test suite in `tests/` is designed to be **100% deterministic, offline, and self-contained**. Tests execute in under 2 seconds without requiring:
+
 - A live connection to Microsoft Entra ID.
 - A running PostgreSQL database instance.
 - A running Redis server.
@@ -740,7 +757,8 @@ app.dependency_overrides[get_db] = lambda: mock_db_session
 app.dependency_overrides[get_settings] = lambda: test_settings
 ```
 
-#### Why this is superior to global monkeypatching:
+#### Why this is superior to global monkeypatching
+
 1. **Zero External Calls**: `get_current_user` is never called. The test directly receives a mock `CurrentUser(object_id="...", upn="developer@company.com")` without needing internet access or real JWTs.
 2. **Zero Database Required**: `get_db` yields an in-memory `mock_db_session` instead of connecting to PostgreSQL over TCP.
 3. **Clean Teardown**: After the test completes, `app.dependency_overrides.clear()` restores the application state so subsequent tests are not affected.
@@ -791,7 +809,7 @@ def test_extract_cache_miss_accepted(mock_create_db, mock_set_status, mock_get_c
     mock_create_db.assert_awaited_once()
 ```
 
-#### Critical Rules When Using `@patch` & Async Testing:
+#### Critical Rules When Using `@patch` & Async Testing
 
 1. **Patch where the object is looked up, not where it is defined**:
    The router imported the function via `from app.services.cache import get_cached_result`. Therefore, we patch `"app.routers.invoices.get_cached_result"` (the namespace where the router accesses it), not `"app.services.cache.get_cached_result"`.
@@ -815,17 +833,22 @@ def test_extract_cache_miss_accepted(mock_create_db, mock_set_status, mock_get_c
 | `jwt.decode` | `jwt.decode(...)` (no await) | `@patch(...)` (default `MagicMock`) |
 
 #### Why a Test Function Is `async def` Even When Its Mocks Are Synchronous
+
 In [tests/test_auth_service.py](file:///d:/Azure/FastAPI-103/tests/test_auth_service.py), both patched functions (`_get_jwks_client` and `jwt.decode`) are synchronous. However, the test function itself is declared:
+
 ```python
 @pytest.mark.asyncio
 async def test_get_current_user_valid_token(mock_jwt_decode, mock_get_jwks):
     ...
     user = await get_current_user(token=..., settings=settings)
 ```
+
 Because the function under test (`get_current_user`) is a FastAPI `async def` dependency, calling it requires `await`. And in Python, `await` is only legal inside an `async def` function running inside an event loop (`@pytest.mark.asyncio`).
 
 #### Pytest Fixture Auto-Discovery (`conftest.py`) — Why `client` and `mock_user` Need No `import`
+
 In [tests/test_invoices.py](file:///d:/Azure/FastAPI-103/tests/test_invoices.py), neither `client` nor `mock_user` is imported at the top of the file:
+
 - Pytest automatically discovers and loads any file named `conftest.py` in the test directory.
 - Any function decorated with `@pytest.fixture` inside `conftest.py` (like `def client` or `def mock_user`) is globally available to all test functions.
 - Pytest inspects parameter names: when it sees `def test_...(..., client, mock_user):`, it automatically executes the corresponding fixture in `conftest.py` and injects the resulting objects.
@@ -839,9 +862,11 @@ A frequent question when starting with unit testing is:
 *If we mock the Azure network call and mock token decoding, are we just "cheating"? What is the actual motive?*
 
 #### The Motive: Testing Our Defensive Logic
-We do **not** need to test whether Microsoft Entra ID works (Microsoft already tested that) or whether PyJWT can decrypt RSA keys (PyJWT maintainers already tested that). 
+
+We do **not** need to test whether Microsoft Entra ID works (Microsoft already tested that) or whether PyJWT can decrypt RSA keys (PyJWT maintainers already tested that).
 
 Instead, we are testing **how OUR API behaves under failure conditions**:
+
 - **What if a token is expired?** Does our API crash with an unhandled `500 Internal Server Error`, or does it catch PyJWT's `ExpiredSignatureError` and return a clean HTTP `401 Unauthorized` with an informative message?
 - **What if an attacker supplies a token from an untrusted Azure tenant?** Does our issuer verification reject it?
 - **What if a token is tampered with or malformed?** Does our code fail safely?
@@ -888,6 +913,7 @@ user = await get_current_user(token="expired.token", settings=settings)
    - If NO exception is raised (e.g., a bug in our auth allowed an expired token through!): Pytest immediately **FAILS** the test with: `Failed: DID NOT RAISE <class 'fastapi.exceptions.HTTPException'>`.
 3. **What `as exc_info` provides:**
    It captures the thrown exception object into `exc_info.value` so you can verify the status code and message:
+
    ```python
    # Verify it gave 401 Unauthorized (and not a 500 server crash):
    assert exc_info.value.status_code == 401
@@ -896,6 +922,7 @@ user = await get_current_user(token="expired.token", settings=settings)
    ```
 
 #### Why the Decorator Arguments Are Inverted (The "Onion" Model)
+
 Notice the order of `@patch` vs. test function parameters in [tests/test_auth_service.py](file:///d:/Azure/FastAPI-103/tests/test_auth_service.py):
 
 ```python
@@ -905,12 +932,16 @@ async def test_get_current_user_valid_token(mock_jwt_decode, mock_get_jwks):
 ```
 
 In Python, stacked decorators evaluate **from the bottom up** (inside-out, like layers of an onion):
+
 1. `@patch("jwt.decode")` wraps the test function first, injecting its mock as parameter #1 (`mock_jwt_decode`).
 2. `@patch("app.services.auth._get_jwks_client")` wraps around that result, injecting its mock as parameter #2 (`mock_get_jwks`).
+
 > **Rule to remember:** The decorator closest to `def` is always the first parameter in your function.
 
 #### How `mock_jwks` Works (The MagicMock Chain)
+
 In production [app/services/auth.py](file:///d:/Azure/FastAPI-103/app/services/auth.py), the code executes:
+
 ```python
 jwks_client = _get_jwks_client(settings)
 signing_key = jwks_client.get_signing_key_from_jwt(token)
@@ -918,11 +949,14 @@ payload = jwt.decode(token, signing_key.key, ...)
 ```
 
 In the test, we assign:
+
 ```python
 mock_jwks = MagicMock()
 mock_get_jwks.return_value = mock_jwks
 ```
+
 Because `mock_jwks` is a `MagicMock`:
+
 1. `_get_jwks_client(settings)` returns `mock_jwks` (no network call to Azure's JWKS endpoint).
 2. Calling `jwks_client.get_signing_key_from_jwt(token)` automatically returns *another* new `MagicMock` (`signing_key`).
 3. Accessing `signing_key.key` also yields a dummy mock object, preventing `AttributeError`.
@@ -935,13 +969,16 @@ Because `mock_jwks` is a `MagicMock`:
 In [tests/test_database_service.py](file:///d:/Azure/FastAPI-103/tests/test_database_service.py), we test PostgreSQL ORM operations without running a PostgreSQL instance.
 
 #### Why `create` Used Real Inputs While `get` and `list` Used `MagicMock`
+
 - **In `create_invoice_record()`:** Our code's job is to take raw parameters (`user`, `filename`, `file_hash`) and **construct an `InvoiceRecord`**. We must pass real inputs (`CurrentUser`, `uuid`, etc.) so we can assert that our function correctly mapped `record.user_id = user.object_id` and `record.filename = "test.pdf"`.
 - **In `get_invoice_record()` and `list_user_invoices()`:** Our code does not build or modify the record; it merely runs a SQL query and returns whatever row PostgreSQL returned.
   - **The "Developer Shortcut":** Developers often write `mock_record = MagicMock()` in 1 line rather than typing out all 12 columns of `InvoiceRecord(...)` just to verify pass-through.
   - **Can you use real `InvoiceRecord` instead?** **Yes, 100%!** Using `real_record = InvoiceRecord(...)` and asserting `assert record.filename == "invoice.pdf"` is completely valid and often preferred for readability.
 
 #### How SQLAlchemy 2.0 Query Chaining is Mocked
+
 In SQLAlchemy 2.0 async syntax, querying the database involves method chaining:
+
 ```python
 # Production code in db_invoice.py:
 res = await db.execute(query)       # Step 1: db.execute returns a Result object
@@ -951,6 +988,7 @@ records = list(res.scalars().all()) # Step 2: Unpack rows into a list
 ```
 
 To simulate this without a database:
+
 ```python
 mock_session = AsyncMock()          # Fakes AsyncSession (the DB connection)
 mock_result = MagicMock()           # Fakes SQLAlchemy Result
@@ -964,6 +1002,7 @@ mock_result.scalars.return_value.all.return_value = [mock_record1, mock_record2]
 ```
 
 **What is being compared?**
+
 1. `assert record == mock_record` or `assert len(records) == 2`: Verifies our function faithfully extracted and returned the database rows.
 2. `mock_session.execute.assert_awaited_once()`: Verifies the function actually sent the query to PostgreSQL and awaited it (catches bugs where someone accidentally removed or skipped `db.execute`).
 
@@ -974,33 +1013,42 @@ mock_result.scalars.return_value.all.return_value = [mock_record1, mock_record2]
 In [tests/test_extractor_service.py](file:///d:/Azure/FastAPI-103/tests/test_extractor_service.py), we test `_safe_float` and `ExtractionResponse` schemas rather than invoking `extract_invoice_fields()`.
 
 #### 1. Why Not Run `extract_invoice_fields()` Directly?
+
 Calling `extract_invoice_fields()` executes:
+
 ```python
 client = _get_client(endpoint, key)
 poller = client.begin_analyze_document(model_id="prebuilt-invoice", body=..., ...)
 result = poller.result()  # ❌ REAL NETWORK CALL TO AZURE
 ```
+
 - **Requires Live Azure Cloud:** Fails without active Azure credentials and internet access.
 - **Costs Real Money:** Every call to Azure Document Intelligence burns paid API credits.
 - **Slow Execution:** OCR analysis takes 3 to 8 seconds per document. Our test suite runs all 27 tests in under **1.9 seconds**.
 
 #### 2. Did `test_invoices.py` Cover it Indirectly?
+
 **No.** `test_invoices.py` deliberately patched out `_run_extraction`:
+
 ```python
 @patch("app.routers.invoices._run_extraction", new_callable=AsyncMock)
 ```
+
 API route tests only verify HTTP responses (validating PDF formats, rejecting 0-byte files with 400, returning 202 Accepted with `task_id` in <50ms, and checking Redis cache hits).
 
 #### 3. What Would Be Needed to Mock `extract_invoice_fields()`?
+
 Only the poller call (`poller.result()`) reaches external infrastructure. Everything else is local Python dictionary unpacking.
 
 However, Azure's SDK does **not** return clean JSON or plain dictionaries:
+
 - `VendorName` is not a string; it is a custom SDK `DocumentField` object.
 - The code accesses properties via dot notation: `field.content`, `field.confidence`, `field.value_currency`.
 - If you passed a simple dictionary like `{"VendorName": "Acme"}`, Python crashes with:  
   `AttributeError: 'str' object has no attribute 'content'`.
 
 To mock it, you must construct a deeply nested tree of `MagicMock` or `SimpleNamespace` objects:
+
 ```python
 fake_result = MagicMock()
 fake_result.documents = [
@@ -1010,12 +1058,15 @@ fake_result.documents = [
     })
 ]
 ```
+
 Mocking 30+ nested SDK objects just to verify that `fields["VendorName"].content` got copied into `InvoiceFields(vendor_name=...)` creates brittle, high-maintenance mock boilerplate.
 
 #### 4. Why Testing `_safe_float` Was the High-Leverage Decision
+
 Azure returns monetary numbers in an unusual wrapper: `CurrencyValue(amount=199.99, currencySymbol="$")`.
 
 If code naively does:
+
 ```python
 total = float(field.value)  # 💥 Crashes: TypeError: float() argument must be a string or a real number, not 'CurrencyValue'
 ```
@@ -1023,6 +1074,7 @@ total = float(field.value)  # 💥 Crashes: TypeError: float() argument must be 
 `_safe_float` is the defensive shield that safely extracts `.amount` from Azure's object, parses plain floats/strings, and returns `None` for missing or corrupted data without crashing the server. Testing every edge case of `_safe_float` protects against 95% of real-world production parsing crashes with just 4 clean unit tests.
 
 #### Unit Tests vs. Integration Tests in Production
+
 - **Unit Tests (Our suite):** 100% offline, deterministic, sub-second execution. Tests models, defensive helpers, validation, status codes, and error paths.
 - **Integration Tests:** Run on a scheduled staging pipeline using sample invoices (`sample_invoice.pdf`) against a real Azure test resource to verify Microsoft hasn't changed their OCR model output schema.
 
@@ -1095,6 +1147,7 @@ The repository implements a **Shift-Left DevSecOps Pipeline** via GitHub Actions
 | `hotfix/*` | Critical production fixes cut directly from `main`. | Merges back into both `main` and `develop`. |
 
 #### How to Configure Branch Protection in GitHub
+
 1. In your GitHub repository, navigate to **Settings > Branches**.
 2. Click **Add branch ruleset** (or **Add branch protection rule**).
 3. **Rule for `main`:**
@@ -1140,7 +1193,8 @@ Release PR #2
                               and Stage 3 (Alembic DB Migrations & Azure Deploy)
 ```
 
-##### Exact Terminal Commands:
+##### Exact Terminal Commands
+
 ```bash
 # 1. Start from latest develop
 git checkout develop
@@ -1197,7 +1251,8 @@ Use this when a **critical bug, zero-day CVE, or production outage** occurs on l
   └──────────► MANDATORY BACK-SYNC ────► (develop) (Prevents bug reintroduction)
 ```
 
-##### Exact Terminal Commands:
+##### Exact Terminal Commands
+
 ```bash
 # 1. Cut hotfix branch directly from production main
 git checkout main
@@ -1238,7 +1293,8 @@ git push origin --delete hotfix/patch-critical-cve
 
 Use this when you have **uncommitted, local changes in progress**, but your remote branch has received new commits (e.g. from a teammate's PR or an upstream security hotfix).
 
-##### Exact Terminal Commands:
+##### Exact Terminal Commands
+
 ```bash
 # 1. Safely stash all uncommitted work (including untracked files)
 # WHY -u (--include-untracked)?
@@ -1297,6 +1353,7 @@ To enable Docker Hub publishing, SonarCloud analysis, and automated Azure deploy
 | `DATABASE_URL` | Production PostgreSQL connection string with SSL | `postgresql+asyncpg://<user>:<password>@<db-host>:5432/<dbname>?ssl=require` |
 
 > [!NOTE]
+>
 > - SonarCloud Organization: `abhishek-sunkale`
 > - SonarCloud Project Key: `abhishek6969_FastAPI-103`
 > - `GITHUB_TOKEN` is automatically injected by GitHub Actions to report PR quality gate statuses.
@@ -1352,6 +1409,7 @@ trivy fs --scanners vuln,secret .
 During pipeline integration, multiple real-world security gates and configuration hurdles were identified and hardened:
 
 #### Lesson 1: Docker Image Secret Leaks from SSH Host Keys (`AsymmetricPrivateKey`)
+
 - **The Issue:** Trivy flagged `/etc/ssh/ssh_host_rsa_key`, `ssh_host_ecdsa_key`, and `ssh_host_ed25519_key` as `HIGH` severity secret leaks inside the container image.
 - **Root Cause:** When `apt-get install -y openssh-server` runs during `docker build`, Debian’s package manager generates static SSH host private keys and bakes them permanently into the Docker image layers. This is insecure because every running container would share identical private keys.
 - **The Solution:**
@@ -1362,11 +1420,13 @@ During pipeline integration, multiple real-world security gates and configuratio
   - **Outcome:** The static Docker image has **0 private keys**, Trivy secret scans pass cleanly, and Azure App Service Web SSH functions securely with dynamically generated keys.
 
 #### Lesson 2: Transitive Dependency CVEs (`starlette`)
+
 - **The Issue:** Trivy reported 3 `HIGH` severity CVEs against `starlette` (`CVE-2024-47874`, `CVE-2026-48818`, `CVE-2026-54283`).
 - **Root Cause:** While direct dependencies were updated, `fastapi==0.115.0` was pulling in an unpinned, vulnerable transitive version of Starlette (`0.38.6`).
 - **The Solution:** Bumped `fastapi>=0.115.6` and explicitly pinned `starlette>=0.41.2` in [requirements.txt](file:///d:/Azure/FastAPI-103/requirements.txt), immediately eliminating all High and Critical CVEs from the dependency tree.
 
 #### Lesson 3: SonarCloud Container Path Mapping in GitHub Actions
+
 - **The Issue:** SonarCloud reported `Coverage: 0.0%` with the warning:  
   `Invalid directory path in 'source' element: /home/runner/work/FastAPI-103/FastAPI-103/app`
 - **Root Cause:** Pytest runs on the GitHub Actions host runner (`/home/runner/work/...`), but `sonarcloud-github-action` runs inside an isolated Docker container where the repository is mounted at `/github/workspace`. Because the absolute host path did not exist inside the container, SonarCloud could not resolve the 15 source files.
@@ -1375,39 +1435,48 @@ During pipeline integration, multiple real-world security gates and configuratio
   This aligns with `sonar.sources=.` and `sonar.inclusions=app/**`, allowing SonarCloud to resolve 100% of source files and display true coverage metrics.
 
 #### Lesson 4: Pipeline Trigger Efficiency (`paths-ignore`)
+
 - **The Need:** Pushing documentation updates (like `README.md`) or modifying Terraform infrastructure configurations should not trigger a full Docker build, unit test suite, and image scan.
 - **The Solution:** Added `paths-ignore` to `.github/workflows/ci-cd.yml`:
+
   ```yaml
   paths-ignore:
     - "terraform/**"
     - "**.md"
     - ".gitignore"
   ```
+
   This saves GitHub Actions compute minutes and prevents redundant container builds while managing infrastructure separately.
 
 #### Lesson 5: Pre-Deployment Database Migrations with Alembic in CI/CD
+
 - **The Issue:** Running database migrations inside the Docker container entrypoint (`entrypoint.sh`) at startup causes critical operational hazards in production:
   1. **Concurrency Conflicts:** When App Service scales or boots multiple container replicas simultaneously, each worker runs `alembic upgrade head` concurrently, risking database schema locks and race conditions.
   2. **Crash Loops:** If a migration fails on boot, the container exits immediately, leading to App Service restart loops and total downtime for live traffic.
 - **The Solution:** We decoupled database migrations from container boot. In Stage 3 of [.github/workflows/ci-cd.yml](file:///d:/Azure/FastAPI-103/.github/workflows/ci-cd.yml), GitHub Actions runs `alembic upgrade head` in a single isolated runner step *before* triggering the container update:
+
   ```bash
   alembic upgrade head
   ```
+
   If migrations encounter an error, the deployment aborts immediately, leaving the existing live container completely untouched and operational.
 
 #### Lesson 6: Zero-Downtime Container Deployments to Azure App Service via Service Principal (SP)
+
 - **The Workflow:**
   1. **Authentication:** GitHub Actions authenticates against Azure Resource Manager using a dedicated Service Principal (`azure/login@v2`) scoped to the resource group (`rg-invoice-dev`).
   2. **Container Rollout:** Microsoft's official `azure/webapps-deploy@v3` action updates the App Service configuration to the freshly built, Trivy-scanned Docker image (`${{ secrets.DOCKERHUB_USERNAME }}/fastapi-invoice-api:latest`).
   3. **Health Validation:** Azure App Service performs a zero-downtime rolling container swap, keeping existing requests alive until the new container passes health probes on port 8000.
 
 #### Lesson 7: Decoupling Cloud Infrastructure from Application Delivery
+
 - **The Practice:** Infrastructure code (`terraform/**`) and application code (`app/**`) possess different lifecycles and risk profiles:
   - Infrastructure changes (PostgreSQL firewall rules, Redis cache tiering, Cognitive Services SKUs) are stateful, high-impact operations managed deliberately via the Terraform CLI.
   - Application CI/CD concentrates on rapid feedback, unit testing, SAST/SCA security gates, container image creation, and automated deployment.
   - By ignoring `terraform/**` in application CI/CD, developers avoid unintentional infra mutations while maintaining rapid, secure application release velocity.
 
 #### Lesson 8: The "No-Code-Change" Vulnerability Trap (Upstream Base Image Drift & Layer Caching)
+
 - **The Phenomenon:** A developer pushes a branch without touching dependencies or Docker configuration, yet the pipeline suddenly fails on a container security scan with new `HIGH` severity CVEs (e.g. `curl` and `libcurl4t64` `CVE-2026-8286`, `CVE-2026-8927`, `CVE-2026-92392`).
 - **Root Cause:**
   1. **Continuous CVE Disclosure:** Security researchers and upstream package maintainers (Debian) disclose new vulnerabilities in public databases (NVD, Aqua/Trivy DB) daily. A package deemed safe yesterday can be flagged today once a patch is released.
@@ -1431,4 +1500,5 @@ This repository demonstrates an end-to-end enterprise cloud engineering lifecycl
 - **Enterprise GitFlow Delivery:** Protected `main` and `develop` branches, ephemeral feature branches, automated pull request status checks, and zero-downtime rolling container updates to Azure App Service via a dedicated Service Principal.
 
 ---
+
 *End of Documentation — FastAPI Invoice Extractor API*
