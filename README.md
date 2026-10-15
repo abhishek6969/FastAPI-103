@@ -1085,16 +1085,96 @@ The repository implements a **Shift-Left DevSecOps Pipeline** via GitHub Actions
 
 ---
 
-### 1. GitFlow Branching Strategy
+### 1. GitFlow Branching Strategy & Branch Protection Rules
 
 | Branch | Purpose | Protection Rules |
 | :--- | :--- | :--- |
-| `main` | Production releases. Always stable and deployable. | Direct pushes blocked. Requires PR review and green CI checks. |
-| `develop` | Integration / Staging branch where new features merge. | Requires green CI checks before merging into `main`. |
-| `feature/*` | Ephemeral feature branches (e.g. `feature/jwt-rotation`). | Cut from `develop`, merges back into `develop` via PR. |
-| `hotfix/*` | Critical production fixes cut directly from `main`. | Merges into both `main` and `develop`. |
+| `main` | Production releases. Always stable and deployable. | Direct pushes blocked. Requires PR review and green CI checks (`1. Quality, Tests & Security Scans`, `SonarCloud Code Analysis`). Merges trigger Stage 3 Azure deployment. |
+| `develop` | Integration branch where tested features merge. | Direct pushes blocked. Requires PR review and green CI checks (`1. Quality, Tests & Security Scans`). |
+| `feature/*` | Ephemeral feature branches (e.g. `feature/user-preferences`). | Cut from `develop`, merges back into `develop` via PR. |
+| `hotfix/*` | Critical production fixes cut directly from `main`. | Merges back into both `main` and `develop`. |
+
+#### How to Configure Branch Protection in GitHub
+1. In your GitHub repository, navigate to **Settings > Branches**.
+2. Click **Add branch ruleset** (or **Add branch protection rule**).
+3. **Rule for `main`:**
+   - **Branch name pattern:** `main`
+   - ✅ **Require a pull request before merging:**
+     - Require approvals: `1` (or uncheck if you are sole dev, but keep PR requirement)
+     - Dismiss stale pull request approvals when new commits are pushed
+   - ✅ **Require status checks to pass before merging:**
+     - Require branches to be up to date before merging
+     - Search and select: `1. Quality, Tests & Security Scans` and `SonarCloud Code Analysis`
+   - ✅ **Do not allow bypassing the above settings** (Enforce for administrators)
+   - ✅ **Restrict deletions**
+4. **Rule for `develop`:**
+   - Repeat the above with branch pattern `develop` to ensure untested code cannot be pushed directly to your development integration branch.
 
 ---
+
+### 1.1 GitFlow Simulation: Adding the User Preferences Feature
+
+To demonstrate GitFlow in practice, we simulated adding a lightweight **User Preferences** feature (`user_preferences` table with UI `theme: dark | light`):
+
+#### Lifecycle Overview:
+```
+(develop) ───► cut feature branch ───► [feature/user-preferences]
+                                              │
+                                              │ Code: Model, Router, Alembic 002, Unit Tests
+                                              │ Run offline tests locally (`pytest`)
+                                              ▼
+(develop) ◄─── Merge PR (CI gates pass) ◄─── Push & Open PR to develop
+    │
+    ▼
+Promote to Release via PR
+    │
+    ▼
+(main) ◄────── Merge PR to main ───► Triggers Container Scan, Alembic Pre-Deploy & App Service Rollout
+```
+
+#### Step-by-Step Simulation Commands:
+
+```bash
+# 1. Switch to develop and pull latest
+git checkout develop
+git pull origin develop
+
+# 2. Create feature branch off develop
+git checkout -b feature/user-preferences
+
+# 3. Develop feature (already generated in app/ and alembic/)
+#    - Model: app/models/db_preference.py
+#    - Schemas: app/models/preference.py
+#    - Service: app/services/db_preference.py
+#    - Router: app/routers/preferences.py (GET /preferences, PUT /preferences)
+#    - Migration: alembic/versions/002_create_user_preferences.py
+#    - Unit Tests: tests/test_preferences.py
+
+# 4. Verify test suite passes locally (33 tests in < 2 seconds)
+pytest -v tests/test_preferences.py
+
+# 5. Commit changes
+git add app/ alembic/ tests/
+git commit -m "feat(preferences): add user UI theme preferences with alembic migration"
+
+# 6. Push feature branch to GitHub
+git push -u origin feature/user-preferences
+
+# 7. Open Pull Request on GitHub:
+#    Base: develop  <--  Compare: feature/user-preferences
+#    GitHub Actions runs Stage 1 (Tests + SonarCloud + Trivy).
+#    Branch protection blocks merge until all checks are green!
+
+# 8. Merge PR into develop on GitHub.
+
+# 9. Release Promotion to Production:
+#    Open PR on GitHub:
+#    Base: main  <--  Compare: develop
+#    Once merged to main, GitHub Actions triggers:
+#    - Stage 1: Quality, Tests, SonarCloud
+#    - Stage 2: Docker Buildx, Trivy container scan, Docker Hub push
+#    - Stage 3: Alembic migration (002) against Azure PostgreSQL, followed by App Service container deploy!
+```
 
 ### 2. Required GitHub Secrets
 
@@ -1219,3 +1299,14 @@ During pipeline integration, multiple real-world security gates and configuratio
   - Infrastructure changes (PostgreSQL firewall rules, Redis cache tiering, Cognitive Services SKUs) are stateful, high-impact operations managed deliberately via the Terraform CLI.
   - Application CI/CD concentrates on rapid feedback, unit testing, SAST/SCA security gates, container image creation, and automated deployment.
   - By ignoring `terraform/**` in application CI/CD, developers avoid unintentional infra mutations while maintaining rapid, secure application release velocity.
+
+#### Lesson 8: The "No-Code-Change" Vulnerability Trap (Upstream Base Image Drift & Layer Caching)
+- **The Phenomenon:** A developer pushes a branch without touching dependencies or Docker configuration, yet the pipeline suddenly fails on a container security scan with new `HIGH` severity CVEs (e.g. `curl` and `libcurl4t64` `CVE-2026-8286`, `CVE-2026-8927`, `CVE-2026-92392`).
+- **Root Cause:**
+  1. **Continuous CVE Disclosure:** Security researchers and upstream package maintainers (Debian) disclose new vulnerabilities in public databases (NVD, Aqua/Trivy DB) daily. A package deemed safe yesterday can be flagged today once a patch is released.
+  2. **The Docker Layer Cache Trap:** GitHub Actions utilizes Docker layer caching (`type=gha`). Because `Dockerfile` was unchanged, Buildx reused the cached Debian layer from the previous build (which contained `curl 8.14.1-2+deb13u5`). When Trivy downloaded today's latest vulnerability database, it caught the outdated cached packages.
+- **The Solution:**
+  1. **Attack Surface Reduction:** Never install packages in production containers that the application runtime doesn't need. Removing `curl` completely eliminated both `curl` and `libcurl4t64` from the image layers.
+  2. **Upstream Security Upgrades:** Added `apt-get upgrade -y` to the Docker build step to ensure all base Debian OS libraries receive security patches.
+  3. **Cache Invalidation:** Updating the `Dockerfile` `RUN` step busts the stale GHA layer cache, forcing Buildx to build a fresh, hardened image.
+
