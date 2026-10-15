@@ -1173,28 +1173,36 @@ git push -u origin feature/user-preferences
 #      Docker Buildx -> Trivy Container Scan -> Docker Hub Push ->
 #      Alembic Migration (002) on Azure PostgreSQL -> Azure App Service Rollout!
 
-# 8. Post-Release Local Sync (Keep machine clean):
+# 8. Post-Release Local Sync (Pure PR-Driven Flow):
+# All merges happened on GitHub via PRs (protected branches block direct local pushes).
+# Locally, you simply pull the merged state from remote:
 git checkout main
 git pull origin main
+
 git checkout develop
 git pull origin develop
-git branch -d feature/user-preferences  # Delete merged local branch
+
+# Clean up the merged local feature branch
+git branch -d feature/user-preferences
 ```
 
 ---
 
-#### Scenario B: Production Hotfix Flow (`hotfix/*` ➔ `main` AND Back-Sync to `develop`)
+#### Scenario B: Production Hotfix Flow (`hotfix/*` ➔ PR to `main` AND PR to `develop`)
 
 Use this when a **critical bug, zero-day CVE, or production outage** occurs on live `main` that cannot wait for the next feature release cycle.
 
 ```
 (main) ──────► cut hotfix ────► [hotfix/patch-critical-cve]
                                          │
-                                         │ Fix issue, run pytest
+                                         │ Fix issue, run pytest, git push
                                          ▼
-(main) ◄────── Merge PR #1 ◄─── PR: hotfix ➔ main (Triggers Immediate Deploy)
-  │
-  └──────────► MANDATORY BACK-SYNC ────► (develop) (Prevents bug reintroduction)
+                                  Open PRs on GitHub:
+                                         │
+                    ┌────────────────────┴────────────────────┐
+                    ▼                                         ▼
+              PR #1: hotfix ➔ main                      PR #2: hotfix ➔ develop
+        (Triggers Immediate Prod Deploy)            (Back-Syncs fix to prevent regressions)
 ```
 
 ##### Exact Terminal Commands:
@@ -1210,24 +1218,29 @@ git checkout -b hotfix/patch-critical-cve
 # 3. Verify tests pass locally
 pytest -v
 
-# 4. Commit and push hotfix
+# 4. Commit and push hotfix branch to GitHub
 git add Dockerfile
 git commit -m "fix(security): patch critical CVE in container base image"
 git push -u origin hotfix/patch-critical-cve
 
 # 5. Open Hotfix PR to main on GitHub:
 #    Base: main  <--  Compare: hotfix/patch-critical-cve
-#    - Merge into main triggers automated build, container scan, and deployment!
+#    - Merging into main triggers automated build, container scan, and production deployment!
 
-# 6. CRITICAL STEP: Back-Sync Hotfix into develop!
-#    WHY? If you don't sync back to develop, future feature branches cut from
-#    develop will reintroduce the bug or fail security gates on their next release!
+# 6. Back-Sync Hotfix into develop via GitHub PR (Never merge locally into protected branches!):
+#    Open a second PR on GitHub:
+#    Base: develop  <--  Compare: hotfix/patch-critical-cve
+#    - Merging this PR ensures develop receives the fix, preventing future feature
+#      branches from reintroducing the vulnerability.
+
+# 7. Post-Hotfix Local Sync:
+git checkout main
+git pull origin main
+
 git checkout develop
 git pull origin develop
-git merge main
-git push origin develop
 
-# 7. Clean up hotfix branch
+# Clean up local and remote hotfix branch
 git branch -d hotfix/patch-critical-cve
 git push origin --delete hotfix/patch-critical-cve
 ```
